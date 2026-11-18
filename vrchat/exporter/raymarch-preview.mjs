@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { generate } from './worldgen.mjs';
 import { bakeSDF, NEAR, FAR } from './sdf.mjs';
 import { sunFrame } from './shadow.mjs';
+import { detailTexture } from './detail.mjs';
 
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
@@ -93,7 +94,7 @@ fn tmap(x: vec3f) -> vec3f { return clamp((x * (2.51 * x + .03)) / (x * (2.43 * 
 // ---------------------------------------------------------------- data
 const { W, D } = await generate(1, () => {});
 const sdf = bakeSDF(D, W.NX, W.NY, W.NZ, W.VS);
-const blobs = { near: sdf.near, far: sdf.far, det: readFileSync(path.join(raw, 'tex_detail.bin')), vol: readFileSync(path.join(raw, 'tex_volume.bin')), gm: readFileSync(path.join(raw, 'tex_ground.bin')), sh: readFileSync(path.join(raw, 'tex_shadow.bin')) };
+const blobs = { near: sdf.near, far: sdf.far, det: await detailTexture(), vol: readFileSync(path.join(raw, 'tex_volume.bin')), gm: readFileSync(path.join(raw, 'tex_ground.bin')), sh: readFileSync(path.join(raw, 'tex_shadow.bin')) };
 const vp = man.viewpoints[VP - 1], pose = [vp.position[0], vp.position[1], -vp.position[2], vp.lookAt[0], vp.lookAt[1], -vp.lookAt[2]];
 const { M } = sunFrame(), L = man.sun;
 const UB = new Float32Array(60);

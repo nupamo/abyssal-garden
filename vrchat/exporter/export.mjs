@@ -10,13 +10,13 @@
 // keeps the view the same (not mirrored). Terrain meshes are written in Unity space; instance data stays in the original
 // ("abyss") space and the shaders flip z at the end. Flipping z reverses triangle winding, so every mesh here has its
 // winding reversed to stay front-facing.
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generate } from './worldgen.mjs';
-import { detailTexture } from './detail.mjs';
 import { ShadowRaster, sunFrame } from './shadow.mjs';
 import { bakeSDF, NEAR as SDF_NEAR, FAR as SDF_FAR } from './sdf.mjs';
+import { packPlants, toHalf, DOT_SLOTS } from './grow.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
@@ -26,16 +26,18 @@ const SHADOW = +arg('--shadow', LV ? 2048 : 4096);
 const PKG = path.join(here, '..', 'Assets', 'AbyssalGarden');
 const OUT = path.resolve(arg('--out', path.join(PKG, 'Raw~')));
 mkdirSync(OUT, { recursive: true });
+// what an earlier export left (other levels write other file sets)
+for (const f of readdirSync(OUT)) if (/\.(bin|json)$/.test(f)) rmSync(path.join(OUT, f));
 const log = (m) => console.log(m);
 const t0 = Date.now();
 
-const { W, D, T, Wd, poses, meshes } = await generate(LV, log);
+// the world is always generated at High: the level only sets the default thinning, shadow map size and shaft steps
+const { W, D, T, Wd, poses, meshes } = await generate(0, log, true);
 const files = {};
 const save = (name, data) => { writeFileSync(path.join(OUT, name), Buffer.from(data.buffer, data.byteOffset, data.byteLength)); files[name] = data.byteLength; };
 
 // ---------------------------------------------------------------- textures
-log('detail texture…');
-save('tex_detail.bin', await detailTexture());
+// (the rock detail texture is made in Unity when the world loads: AbyssDetail.shader)
 save('tex_volume.bin', Wd.volD);   // RG8, 256 x 40 x 256 (r openness, g skylight)
 save('tex_ground.bin', Wd.gm);     // RGBA8, 512 x 512 (r magenta cover, b purple zone, a sand)
 { // terrain distance field for the raymarcher
@@ -44,32 +46,6 @@ save('tex_ground.bin', Wd.gm);     // RGBA8, 512 x 512 (r magenta cover, b purpl
   log(`terrain SDF: ${((Date.now() - t) / 1000).toFixed(1)} s`);
 }
 
-// ---------------------------------------------------------------- terrain: one mesh per culling cell, Unity space
-{
-  const vf = new Float32Array(T.vb), v8 = new Int8Array(T.vb), nC = W.CELLS * W.CELLS, parts = [], cells = [];
-  const remap = new Int32Array(T.nv).fill(-1);
-  for (let c = 0; c < nC; c++) {
-    const a = T.start[c] * 6, b = T.start[c + 1] * 6;
-    if (a === b) continue;
-    const used = [];
-    for (let i = a; i < b; i++) { const v = T.ib[i]; if (remap[v] < 0) { remap[v] = used.length; used.push(v); } }
-    const nv = used.length, ni = b - a, buf = new ArrayBuffer(8 + nv * 24 + ni * 4), h = new Uint32Array(buf, 0, 2);
-    h[0] = nv; h[1] = ni;
-    const P = new Float32Array(buf, 8, nv * 3), N = new Float32Array(buf, 8 + nv * 12, nv * 3), I = new Uint32Array(buf, 8 + nv * 24, ni);
-    used.forEach((v, k) => {
-      P[k * 3] = vf[v * 4]; P[k * 3 + 1] = vf[v * 4 + 1]; P[k * 3 + 2] = -vf[v * 4 + 2];
-      N[k * 3] = v8[v * 16 + 12] / 127; N[k * 3 + 1] = v8[v * 16 + 13] / 127; N[k * 3 + 2] = -v8[v * 16 + 14] / 127;
-    });
-    for (let i = a; i < b; i += 3) { I[i - a] = remap[T.ib[i]]; I[i - a + 1] = remap[T.ib[i + 2]]; I[i - a + 2] = remap[T.ib[i + 1]]; }
-    for (const v of used) remap[v] = -1;
-    cells.push({ cell: c, ...cellCenter(c), ymin: T.lo[c], ymax: T.hi[c], vertices: nv, triangles: ni / 3 });
-    parts.push(new Uint8Array(buf));
-  }
-  const all = new Uint8Array(parts.reduce((s, p) => s + p.length, 0)); let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
-  save('terrain.bin', all);
-  var terrain = { file: 'terrain.bin', cells };
-  log(`terrain: ${cells.length} cell meshes`);
-}
 function cellCenter(c) { const x = c % W.CELLS, z = (c / W.CELLS) | 0; return { cx: W.OX + (x + 0.5) * W.CELLW, cz: W.OZ + (z + 0.5) * W.CELLW }; }
 
 // ---------------------------------------------------------------- template meshes
@@ -136,6 +112,20 @@ function instTexture(name, n, N, fill) {
   textures[name] = { file: name + '.bin', width: TW, height: rows, texelsPerInstance: N, instances: n };
   return name;
 }
+// the same with half floats (RGBAHalf), and 16-bit integer textures (R16, read back as value / 65535)
+function halfTexture(name, n, N, fill) {
+  const rows = Math.max(1, Math.ceil(n * N / TW)), f = new Float32Array(TW * rows * 4);
+  fill(f);
+  save(name + '.bin', Uint16Array.from(f, toHalf));
+  textures[name] = { file: name + '.bin', width: TW, height: rows, texelsPerInstance: N, instances: n, format: 'RGBAHalf' };
+  return name;
+}
+function r16Texture(name, data) {
+  const rows = Math.max(1, Math.ceil(data.length / TW)), u = new Uint16Array(TW * rows); u.set(data);
+  save(name + '.bin', u);
+  textures[name] = { file: name + '.bin', width: TW, height: rows, texelsPerInstance: 1, instances: data.length, format: 'R16' };
+  return name;
+}
 const sets = []; // a set = one material + one template mesh, drawn as `draws` (instance ranges, per cell or whole-world)
 // renderers for a cell-sorted range table: per cell, draws of at most K instances
 function celledDraws(start, K) {
@@ -145,25 +135,37 @@ function celledDraws(start, K) {
 }
 const maxRun = (start) => { let m = 1; for (let c = 0; c < start.length - 1; c++) m = Math.max(m, start[c + 1] - start[c]); return m; };
 
-// leaves: t0 = (x, y, z, len), t1 = (yaw, tilt*1000 + 4096*bend8, wid*2000 + 4096*hA*50, type + 8*s1_8 + 2048*s2_8), all integers exact in f32
-function leafTexture(name, L) {
-  const f = new Float32Array(L.buf), u8 = new Uint8Array(L.buf);
-  return instTexture(name, L.n, 2, (d) => {
-    for (let i = 0; i < L.n; i++) {
-      const o = i * 8, s = i * 9, b = i * 36;
-      d[o] = f[s]; d[o + 1] = f[s + 1]; d[o + 2] = f[s + 2]; d[o + 3] = f[s + 3];
-      d[o + 4] = f[s + 4];
-      d[o + 5] = Math.min(4095, Math.round(f[s + 5] * 1000)) + 4096 * u8[b + 35];
-      d[o + 6] = Math.min(4095, Math.round(f[s + 6] * 2000)) + 4096 * Math.min(4095, Math.round(f[s + 7] * 50));
-      d[o + 7] = u8[b + 32] + 8 * u8[b + 33] + 2048 * u8[b + 34];
-    }
-  });
+// ---------------------------------------------------------------- plants, grown by the shaders (grow.mjs, AbyssGrow.cginc)
+const THIN = 1 << LV; // Medium / Low draw every 2nd / 4th leaf (wider), as the web version does
+const plants = packPlants(W, W.REC);
+const tGroups = instTexture('plant_groups', plants.nGroups, 4, (d) => d.set(plants.groups));
+const tLeafGroup = r16Texture('plant_leaf_group', plants.leafGroup), tGlintGroup = r16Texture('plant_glint_group', plants.glintGroup);
+const tDots = halfTexture('plant_dots', plants.nDots, 1, (d) => d.set(plants.dots));
+const plantTex = { _AbyssGroups: tGroups, _AbyssLeafGroup: tLeafGroup, _AbyssGlintGroup: tGlintGroup, _AbyssDots: tDots };
+const fl = (o) => Object.entries(o).map(([name, value]) => ({ name, value }));
+// per cell, draws of at most K slots, a slot standing for `stride` items (leaves) or 1/per items (ground-cover spots)
+function strideDraws(start, K, stride) {
+  const r = [];
+  for (let c = 0; c < W.CELLS * W.CELLS; c++) {
+    const slots = Math.ceil((start[c + 1] - start[c]) / stride);
+    for (let a = 0; a < slots; a += K) r.push({ cell: c, ...cellCenter(c), base: start[c] + a * stride, count: Math.min(K, slots - a) });
+  }
+  return r;
 }
-const tBig = leafTexture('inst_leaves_big', Wd.big), tBigF = leafTexture('inst_leaves_far', Wd.bigF), tSmall = leafTexture('inst_leaves_small', Wd.small);
-for (const [name, tex, L, rows, minD, maxD, far] of [['leaves_near', tBig, Wd.big, 9, 0, 24, 150], ['leaves_mid', tBig, Wd.big, 5, 24, 58, 150], ['leaves_far', tBigF, Wd.bigF, 3, 58, 150, 150], ['leaves_small', tSmall, Wd.small, 3, 0, 70, 70]]) {
-  const K = kFor(rows * 2, maxRun(L.start));
-  sets.push({ name, shader: 'leaf', texture: tex, template: leafTemplate(rows, K), K, celled: true, minD, maxD, rows, far, scaleWithDetail: true, draws: celledDraws(L.start, K) });
+for (const [name, rows, minD, maxD, stride, ws] of [['leaves_near', 9, 0, 24, 1, 1], ['leaves_mid', 5, 24, 58, 1, 1], ['leaves_far', 3, 58, 150, 2, 1.5]]) {
+  const K = kFor(rows * 2, Math.ceil(maxRun(plants.leafStart) / stride));
+  sets.push({ name, shader: 'leaf', textures: fl(plantTex), template: leafTemplate(rows, K), K, celled: true, minD, maxD, far: 150, floats: fl({ _Mode: 0, _Stride: stride, _WidthScale: ws, _Thin: THIN }), draws: strideDraws(plants.leafStart, K, stride) });
 }
+{ // ground cover: DOT_SLOTS leaves per spot, the renderer's count is in spots
+  const kd = Math.max(1, Math.min(maxRun(plants.dotStart), Math.floor(65000 / (6 * DOT_SLOTS))));
+  sets.push({ name: 'leaves_ground', shader: 'leaf', textures: fl(plantTex), template: leafTemplate(3, kd * DOT_SLOTS), K: kd, celled: true, minD: 0, maxD: 70, far: 70, floats: fl({ _Mode: 1, _Stride: 1, _WidthScale: 1, _Thin: THIN }), draws: strideDraws(plants.dotStart, kd, 1) });
+}
+{ // glints: along the kelp, and on 30% of the carpet tufts
+  const kg = kFor(4, maxRun(plants.glintStart)), kd = kFor(4, maxRun(plants.dotStart));
+  sets.push({ name: 'glints_kelp', shader: 'glint', textures: fl(plantTex), template: quadTemplate(kg), K: kg, celled: true, minD: 0, maxD: 120, floats: fl({ _Mode: 0 }), draws: strideDraws(plants.glintStart, kg, 1) });
+  sets.push({ name: 'glints_ground', shader: 'glint', textures: fl(plantTex), template: quadTemplate(kd), K: kd, celled: true, minD: 0, maxD: 120, floats: fl({ _Mode: 1 }), draws: strideDraws(plants.dotStart, kd, 1) });
+}
+log(`plants: ${plants.nGroups} groups (${plants.nLeaves} leaves, ${plants.nGlints} glints), ${plants.nDots} ground-cover spots`);
 
 // solids: 3 texels (x, y, z, scale), (quaternion), (material, seed, texture scale or fade distance, bob)
 {
@@ -178,35 +180,33 @@ for (const [name, tex, L, rows, minD, maxD, far] of [['leaves_near', tBig, Wd.bi
   // rock chunks + pebbles, then sponges / coral; LOD meshes as in main.js render()
   const cat = (list) => { const n = list.reduce((s, c) => s + c.n, 0), d = new Float32Array(n * 12); let o = 0; const base = []; for (const c of list) { base.push(o / 12); d.set(c.data, o); o += c.data.length; } return { n, d, base }; };
   const ch = cat(Wd.chunks), pr = cat(Wd.props);
-  const tCh = instTexture('inst_chunks', ch.n, 3, (d) => d.set(ch.d)), tPr = instTexture('inst_props', pr.n, 3, (d) => d.set(pr.d));
-  const addCelled = (name, tex, c, base, mi, minD, maxD) => {
+  // compact records (half floats, 2 texels): (x - cell centre x, y + 30, z - cell centre z, scale), (quaternion xyz with
+  // w >= 0, seed); material, texture scale / fade distance and bob are the same for a whole set (material floats)
+  const compact = (name, list) => halfTexture(name, list.n, 2, (d) => {
+    for (let i = 0; i < list.n; i++) {
+      const a = list.d.subarray(i * 12, i * 12 + 12), cell = Math.min(W.CELLS - 1, Math.max(0, Math.floor((a[0] - W.OX) / W.CELLW))) + W.CELLS * Math.min(W.CELLS - 1, Math.max(0, Math.floor((a[2] - W.OZ) / W.CELLW)));
+      const { cx, cz } = cellCenter(cell), sg = a[7] < 0 ? -1 : 1;
+      d.set([a[0] - cx, a[1] + 30, a[2] - cz, a[3], a[4] * sg, a[5] * sg, a[6] * sg, a[9]], i * 8);
+    }
+  });
+  const tCh = compact('inst_chunks', ch), tPr = compact('inst_props', pr);
+  const addCelled = (name, tex, c, base, mi, minD, maxD, mat, ts) => {
     if (!c.n) return;
     const K = kFor(meshes[mi].nv, maxRun(c.start)), start = Array.from(c.start, (v) => v + base);
-    sets.push({ name, shader: 'solid', texture: tex, template: solidTemplate(mi, K), K, celled: true, minD, maxD, mesh: mi, scaleWithDetail: true, draws: celledDraws(start, K) });
+    sets.push({ name, shader: 'solid', texture: tex, template: solidTemplate(mi, K), K, celled: true, minD, maxD, mesh: mi, floats: fl({ _Compact: 1, _Mat: mat, _TexScale: ts }), draws: celledDraws(start, K) });
   };
   Wd.chunks.forEach((c, i) => {
-    const big = i > 2 && i < 6;
-    addCelled(`chunks${i}`, tCh, c, ch.base[i], 14 + i, 0, i > 5 ? 30 : big ? 40 : 96);
-    if (big) addCelled(`chunks${i}_far`, tCh, c, ch.base[i], 20 + i, 40, 150);
+    const big = i > 2 && i < 6, ts = i > 5 ? 44 : big ? 0 : 96;
+    addCelled(`chunks${i}`, tCh, c, ch.base[i], 14 + i, 0, i > 5 ? 30 : big ? 40 : 96, 1, ts);
+    if (big) addCelled(`chunks${i}_far`, tCh, c, ch.base[i], 20 + i, 40, 150, 1, ts);
   });
   Wd.props.forEach((c, i) => {
-    const lod = i === 3 || i === 4;
-    addCelled(`props${i}`, tPr, c, pr.base[i], 4 + i, 0, lod ? 6 : 110);
-    if (lod) addCelled(`props${i}_far`, tPr, c, pr.base[i], 18 + i, 6, 110);
+    const lod = i === 3 || i === 4, mat = i < 3 ? 4 : 5;
+    addCelled(`props${i}`, tPr, c, pr.base[i], 4 + i, 0, lod ? 6 : 110, mat, 1);
+    if (lod) addCelled(`props${i}_far`, tPr, c, pr.base[i], 18 + i, 6, 110, mat, 1);
   });
 }
 
-// glints (sparkles): bucketed into cells here (the web version draws them in one call)
-{
-  const G = Wd.glints, n = G.length / 8, cellOf = (x, z) => Math.min(W.CELLS - 1, Math.max(0, Math.floor((x - W.OX) / W.CELLW))) + W.CELLS * Math.min(W.CELLS - 1, Math.max(0, Math.floor((z - W.OZ) / W.CELLW)));
-  const start = new Uint32Array(W.CELLS * W.CELLS + 1), key = new Uint16Array(n);
-  for (let i = 0; i < n; i++) { key[i] = cellOf(G[i * 8], G[i * 8 + 2]); start[key[i] + 1]++; }
-  for (let c = 0; c < W.CELLS * W.CELLS; c++) start[c + 1] += start[c];
-  const fillAt = start.slice(), sorted = new Float32Array(G.length);
-  for (let i = 0; i < n; i++) { const o = fillAt[key[i]]++; sorted.set(G.subarray(i * 8, i * 8 + 8), o * 8); }
-  const tex = instTexture('inst_glints', n, 2, (d) => d.set(sorted)), K = kFor(4, maxRun(start));
-  sets.push({ name: 'glints', shader: 'glint', texture: tex, template: quadTemplate(K), K, celled: true, minD: 0, maxD: 120, draws: celledDraws(start, K) });
-}
 // helper meshes for the camera-following objects: a quad (water surface) and a sphere (backdrop, light shafts, post)
 const surfaceMesh = quadTemplate(1);
 const sphereMesh = (() => {
@@ -214,6 +214,27 @@ const sphereMesh = (() => {
   return writeTemplate('mesh_sphere', m.nv, m.ib.length, (P, N, U, I) => {
     for (let v = 0; v < m.nv; v++) for (let j = 0; j < 3; j++) { P[v * 3 + j] = f[v * 4 + j]; N[v * 3 + j] = f[v * 4 + j]; }
     I.set(m.ib);
+  });
+})();
+// ---------------------------------------------------------------- floor collider (Unity space)
+// The player only needs to be kept above the sea floor (and inside the world, AbyssSwim): a 3 m heightfield of the
+// lowest floor in each column, lowered to the lowest within 12 m and smoothed, so rocks and mesas stay passable.
+const floorMesh = (() => {
+  const nx = W.NX, ny = W.NY, nz = W.NZ, h = new Float32Array(nx * nz);
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
+    let y = 0; while (y < ny - 1 && D[x + nx * (y + ny * z)] > 0) y++;
+    const a = D[x + nx * (Math.max(y, 1) - 1 + ny * z)], b = D[x + nx * (y + ny * z)];
+    h[x + nx * z] = W.OY + (y > 0 ? y - 1 + a / (a - b) : 0) * W.VS;
+  }
+  const R = 16, tmp = new Float32Array(nx * nz), m = new Float32Array(nx * nz);
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) { let v = 1e9; for (let i = Math.max(0, x - R); i <= Math.min(nx - 1, x + R); i++) v = Math.min(v, h[i + nx * z]); tmp[x + nx * z] = v; }
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) { let v = 1e9; for (let i = Math.max(0, z - R); i <= Math.min(nz - 1, z + R); i++) v = Math.min(v, tmp[x + nx * i]); m[x + nx * z] = v; }
+  const G = 129, step = (nx - 1) / (G - 1), H = new Float32Array(G * G);
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) { let s = 0, n = 0; for (let b = -4; b <= 4; b++) for (let a = -4; a <= 4; a++) { const x = Math.round(i * step) + a, z = Math.round(j * step) + b; if (x >= 0 && z >= 0 && x < nx && z < nz) { s += m[x + nx * z]; n++; } } H[i + G * j] = s / n; }
+  return writeTemplate('mesh_floor', G * G, (G - 1) * (G - 1) * 6, (P, N, U, I) => {
+    for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) { const v = i + G * j; P.set([W.OX + i * step * W.VS, H[v], -(W.OZ + j * step * W.VS)], v * 3); N[v * 3 + 1] = 1; }
+    let o = 0;
+    for (let j = 0; j < G - 1; j++) for (let i = 0; i < G - 1; i++) { const a = i + G * j, b = a + 1, c = a + G, d = c + 1; I.set([a, b, c, b, d, c], o); o += 6; }
   });
 })();
 // whole-world sets
@@ -257,15 +278,14 @@ const manifest = {
   world: { OX: W.OX, OY: W.OY, OZ: W.OZ, VS: W.VS, NX: W.NX, NY: W.NY, NZ: W.NZ, cells: W.CELLS, cellSize: W.CELLW },
   // arrays of flat records throughout, so Unity's JsonUtility can read it
   textures: [
-    { name: 'detail', file: 'tex_detail.bin', width: 1024, height: 1024, depth: 1, format: 'RGBA32' },
     { name: 'volume', file: 'tex_volume.bin', width: W.NX / 2, height: W.NY / 2, depth: W.NZ / 2, format: 'RG16' },
     { name: 'ground', file: 'tex_ground.bin', width: 512, height: 512, depth: 1, format: 'RGBA32' },
     { name: 'shadow', file: 'tex_shadow.bin', width: SHADOW, height: SHADOW, depth: 1, format: 'R16' },
     { name: 'sdf', file: 'tex_sdf.bin', width: W.NX, height: W.NY, depth: W.NZ, format: 'R8' },
     { name: 'sdfFar', file: 'tex_sdf_far.bin', width: W.NX / 4, height: W.NY / 4, depth: W.NZ / 4, format: 'R8' },
-    ...Object.entries(textures).map(([name, v]) => ({ name, ...v, depth: 1, format: 'RGBAFloat' })),
+    ...Object.entries(textures).map(([name, v]) => ({ name, format: 'RGBAFloat', ...v, depth: 1 })),
   ],
-  terrain, templates: Object.entries(templates).map(([name, v]) => ({ name, ...v })), sets,
+  templates: Object.entries(templates).map(([name, v]) => ({ name, ...v })), sets, floorMesh,
   // viewpoints 1-6 in Unity space: position on the sea floor + 1.3 m, and the point it looks at
   viewpoints: poses.map((p) => ({ position: toUnity(p.slice(0, 3)), lookAt: toUnity(p.slice(3, 6)) })),
   surfaceMesh, sphereMesh, waterSize: LV > 1 ? 256 : 512,

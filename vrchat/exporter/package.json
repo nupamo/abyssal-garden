@@ -4,11 +4,11 @@
   "description": "Exports the Abyssal Garden world (source/src) as data for the Unity / VRChat port",
   "type": "module",
   "scripts": {
-    "export": "node --max-old-space-size=8192 export.mjs",
-    "export:high": "node --max-old-space-size=8192 export.mjs --level high",
-    "export:low": "node --max-old-space-size=8192 export.mjs --level low",
+    "export": "node --max-old-space-size=10000 export.mjs",
+    "export:high": "node --max-old-space-size=10000 export.mjs --level high",
+    "export:low": "node --max-old-space-size=10000 export.mjs --level low",
     "audio": "node audio.mjs",
-    "verify": "node verify-density.mjs && node verify-detail.mjs && node --max-old-space-size=8192 verify-packing.mjs && node verify-shadow.mjs"
+    "verify": "node verify-density.mjs && node verify-detail.mjs && node --max-old-space-size=10000 verify-grow.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0"

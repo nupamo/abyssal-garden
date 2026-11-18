@@ -18,13 +18,36 @@ const lift = (text, from, to) => {
   return text.slice(a, text.indexOf('\n', b + to.length) + 1);
 };
 
-// LV: 0 High, 1 Medium, 2 Low (as in quality.js)
-export function makeContext(LV) {
+// Placement records for the procedural plants: each call in world.js that grows a group of leaves (a kelp column, a
+// cluster, a frond or tuft bunch, a ground-cover spot) also notes where and with which shape parameters. The leaves
+// themselves are then grown by the shaders from these (AbyssGrow.cginc). The generator still runs unchanged, so the
+// random streams, and with them every placement, stay those of the web version.
+const RECORD = [
+  ['const la = rnd() * TAU, lm = rr(0, 0.11), full = rr(0.55, 1.3) * dens;', '$& REC.column.push([x, y, z, H, kind, strands, ph, tw, sr, sc, la, lm, full]);'],
+  ['const cluster = (x, y, z, n, type, lmin, lmax, wmin, wmax, tmax, sway) => {', '$& REC.cluster.push([x, y, z, n, type, lmin, lmax, wmin, wmax, tmax, sway]);'],
+  ['const n = 12 + rnd() * 20 | 0;', '$& REC.frond.push([x, y, z, n, zp]);'],
+  ['const yaw = atan2(T.wn[k + 2], T.wn[k]), n = 5 + rnd() * 7 | 0;', '$& REC.tuft.push([x, y, z, n, zp, yaw]);'],
+  ['const nl = 2 + (rnd() * 3 | 0), yw = rnd() * TAU;', '$& REC.carpet.push([x, y, z, nl, yw]);'],
+  ['if (m > 0.3 && u < m * 0.9) for', 'if (m > 0.3 && u < m * 0.9 && REC.spot.push([x, y, z, 5])) for'],
+  ['hot(x, z)) * sstep(0.42, 0.6, fbm(x * 0.09, 9, z * 0.09, 2))) for', 'hot(x, z)) * sstep(0.42, 0.6, fbm(x * 0.09, 9, z * 0.09, 2)) && REC.spot.push([x, y, z, 7])) for'],
+];
+function instrument(world) {
+  for (const [a, b] of RECORD) {
+    const i = world.indexOf(a);
+    if (i < 0 || world.indexOf(a, i + 1) >= 0) throw new Error('world.js changed, record point not found once: ' + a);
+    world = world.slice(0, i) + b.replace('$&', a) + world.slice(i + a.length);
+  }
+  return world;
+}
+
+// LV: 0 High, 1 Medium, 2 Low (as in quality.js); records: also collect the placement records (REC)
+export function makeContext(LV, records = false) {
   const ctx = vm.createContext({ console, Math, Float32Array, Float64Array, Uint8Array, Int8Array, Int32Array, Uint16Array, Uint32Array, ArrayBuffer, Map, Set, Array, Number, Object });
   const main = src('main.js');
   const code = [
     `const LV = ${LV}, THIN = 1 << LV;`,
-    src('math.js'), src('world.js'),
+    'const REC = { column: [], cluster: [], frond: [], tuft: [], carpet: [], spot: [] };',
+    src('math.js'), records ? instrument(src('world.js')) : src('world.js'),
     // POSES, FLY, spline + arc-length table, flyPts
     lift(main, 'const POSES = [', 'for (const p of POSES) flyPts.push('),
     // procedural meshes, as an expression
@@ -32,14 +55,14 @@ export function makeContext(LV) {
     // floating speck removal (operates on D)
     'function removeSpecks(D) {', lift(main, 'const S = NX * NY, R = new Uint8Array', 'for (const i of L) if (!R[i]) D[i] = -D[i];'), '}',
     // hand the pieces to the caller
-    'this.out = { NX, NY, NZ, VS, OX, OY, OZ, CELLS, CELLW, NCHUNK, MESAS, ARCHES, HOLES, CLEARS, PURPLE, primBuffer, buildTerrain, makeWorld, buildMeshes, removeSpecks, POSES, FLY, flyPts, surfaceNets, Mesh, icosphere };',
+    'this.out = { NX, NY, NZ, VS, OX, OY, OZ, CELLS, CELLW, NCHUNK, MESAS, ARCHES, HOLES, CLEARS, PURPLE, primBuffer, buildTerrain, makeWorld, buildMeshes, removeSpecks, POSES, FLY, flyPts, surfaceNets, Mesh, icosphere, REC };',
   ].join('\n');
   vm.runInContext(code, ctx, { filename: 'abyssal-worldgen.js' });
   return ctx.out;
 }
 
-export async function generate(LV, log = () => {}) {
-  const W = makeContext(LV);
+export async function generate(LV, log = () => {}, records = false) {
+  const W = makeContext(LV, records);
   const P = W.primBuffer(), c = [W.MESAS.length, W.ARCHES.length, W.HOLES.length, W.CLEARS.length];
   let t = Date.now();
   let last = -1;

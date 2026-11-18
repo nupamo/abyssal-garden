@@ -9,6 +9,9 @@ Shader "Abyssal Garden/Solid" {
     _AbyssInst ("Instances", 2D) = "black" {}
     _MinD ("Band start (m)", Float) = 0
     _MaxD ("Band end (m)", Float) = 100000
+    _Compact ("Compact records", Float) = 0
+    _Mat ("Material (compact)", Float) = 1
+    _TexScale ("Texture scale / fade distance (compact)", Float) = 1
     _AbyssDetailScale ("Draw distance scale", Float) = 1
   }
   SubShader {

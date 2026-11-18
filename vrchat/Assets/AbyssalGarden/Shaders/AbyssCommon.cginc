@@ -47,6 +47,8 @@ float Time() { return _Time.y; }
 // how far into the purple grotto the camera is (the web version's g.sun.w)
 float CamZone() { float2 c = CamPos().xz - PURPLE; float t = saturate((44. - length(c)) / 18.); return t * t * (3. - 2. * t); }
 float4 AbyssClip(float3 pA) { return UnityWorldToClipPos(AbyssFlip(pA)); }
+// the cell centre of this renderer (celled renderers sit at their cell's centre), abyss space
+float2 CellCentre() { return float2(unity_ObjectToWorld._m03, -unity_ObjectToWorld._m23); }
 
 // instance records: N texels per instance
 float4 Inst(float idx, int N, int j) { int t = (int)idx * N + j; return _AbyssInst.Load(int3(t & 4095, t >> 12, 0)); }

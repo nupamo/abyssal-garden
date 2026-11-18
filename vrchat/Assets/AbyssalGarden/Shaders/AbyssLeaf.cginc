@@ -1,10 +1,12 @@
 // Leaves: kelp blades, grasses, fronds, ground cover. A port of W_LEAF (source/src/shaders.js), vertex shader `vs` and
 // fragment shader `fs`. The template mesh is ROWS x 2 vertices per blade: uv = (-, slot, side -1|1, row 0..1).
-// Instance records (2 texels, see export.mjs leafTexture): (x, y, z, length),
-// (yaw, tilt*1000 + 4096*bend8, width*2000 + 4096*height*50, type + 8*seed1_8 + 2048*seed2_8).
+// The leaves are grown from placement records (AbyssGrow.cginc): _Mode 0 = kelp columns and other groups (slot ->
+// leaf _Base + slot * _Stride), 1 = ground-cover spots (slot -> spot _Base + slot / 6, leaf slot % 6).
 #ifndef ABYSS_LEAF_INCLUDED
 #define ABYSS_LEAF_INCLUDED
-#include "AbyssCommon.cginc"
+#include "AbyssGrow.cginc"
+
+float _Mode;
 
 float _Far; // fade-out distance (FAR override: 150, 70 for the small ground cover)
 
@@ -33,16 +35,37 @@ float3 pal(float h) {
 float2 unpack(float x, float m) { float hi = floor(x / m); return float2(x - hi * m, hi); }
 
 struct Leaf { float3 p; float3 n; float3 col; float4 pr; float2 sd; float3 spc; };
+// the leaf a template slot draws, or false
+bool SlotLeaf(float slot, out LeafP lp) {
+  lp = (LeafP)0;
+  float thin = max(_Thin, 1.);
+  if (_Mode < .5) {
+    if (slot >= _Count) return false;
+    int idx = (int)(_Base + slot * max(_Stride, 1.));
+    int gi = Index16(_AbyssLeafGroup, idx);
+    int k = idx - (int)Group(gi, 3).y;
+    lp = GrowGroupLeaf(gi, k);
+    // thinning keeps every stem, as the web version does
+    if (lp.type != 1 && fmod((float)k, thin) != 0.) return false;
+  } else {
+    float n = floor(slot / DOT_SLOTS);
+    if (n >= _Count) return false;
+    int di = (int)(_Base + n);
+    if (fmod((float)di, thin) != 0.) return false;
+    if (!GrowDotLeaf(Dot(di), di, (int)(slot - n * DOT_SLOTS), lp)) return false;
+  }
+  if (lp.type != 1) lp.wid *= (1. + log2(thin) * .5) * max(_WidthScale, 1.);
+  return true;
+}
+
 // abyss-space vertex of side u (-1|1) at row parameter vr (0..1); false when not drawn
-bool LeafVertex(float slot, float u, float vr, bool shadowPass, out Leaf o) {
+bool LeafVertex(LeafP lp, float u, float vr, bool shadowPass, out Leaf o) {
   o = (Leaf)0;
-  if (slot >= _Count) return false;
-  float idx = _Base + slot;
-  float4 a = Inst(idx, 2, 0), b = Inst(idx, 2, 1);
+  float4 a = float4(lp.p, lp.len);
   if (!InBand(a.xyz)) return false;
-  float2 tb = unpack(b.y, 4096.), wh = unpack(b.z, 4096.), t8 = unpack(b.w, 8.), s12 = unpack(t8.y, 256.);
-  float tilt = tb.x / 1000., bend = tb.y / 255., wid = wh.x / 2000., hA = wh.y / 50.;
-  int ty = (int)(t8.x + .5); float s1 = s12.x / 255., s2 = s12.y / 255.;
+  float tilt = lp.tilt, bend = lp.bend, wid = lp.wid, hA = lp.hA;
+  int ty = lp.type; float s1 = lp.s1, s2 = lp.s2;
+  float4 b = float4(lp.yaw, 0., 0., 0.);
   float v = sin(vr * 1.5708);
   float t = shadowPass ? 0. : Time();
   float len = a.w;
@@ -91,8 +114,8 @@ v2f vert(appdata v) {
   UNITY_SETUP_INSTANCE_ID(v);
   UNITY_INITIALIZE_OUTPUT(v2f, o);
   UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
-  Leaf L;
-  if (!LeafVertex(v.uv.y, v.uv.z, v.uv.w, false, L)) { o.pos = ABYSS_COLLAPSE; return o; }
+  Leaf L; LeafP lp;
+  if (!SlotLeaf(v.uv.y, lp) || !LeafVertex(lp, v.uv.z, v.uv.w, false, L)) { o.pos = ABYSS_COLLAPSE; return o; }
   o.pos = AbyssClip(L.p); o.wp = L.p; o.n = L.n; o.uv = float2(v.uv.z, sin(v.uv.w * 1.5708));
   o.col = L.col; o.pr = L.pr; o.sd = L.sd; o.spc = L.spc;
   return o;
@@ -137,8 +160,8 @@ v2fd vertDepth(appdata v) {
   UNITY_SETUP_INSTANCE_ID(v);
   UNITY_INITIALIZE_OUTPUT(v2fd, o);
   UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
-  Leaf L;
-  o.pos = LeafVertex(v.uv.y, v.uv.z, v.uv.w, false, L) ? AbyssClip(L.p) : ABYSS_COLLAPSE;
+  Leaf L; LeafP lp;
+  o.pos = SlotLeaf(v.uv.y, lp) && LeafVertex(lp, v.uv.z, v.uv.w, false, L) ? AbyssClip(L.p) : ABYSS_COLLAPSE;
   return o;
 }
 float4 fragDepth(v2fd i) : SV_Target { return 0.; }

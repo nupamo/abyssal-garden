@@ -1,6 +1,7 @@
 // Compares the baked shadow map (Raw~/tex_shadow.bin, from export.mjs) with the one the web version renders, by running
 // the web version in headless Chromium (WebGPU on SwiftShader; takes a few minutes) and reading its shadow texture.
-// Development check only: node verify-shadow.mjs [medium|high|low]  (same level as the export)
+// Development check only: node verify-shadow.mjs high  (after export.mjs --level high: the export always bakes the
+// shadow of every leaf, which only the web version's High draws)
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

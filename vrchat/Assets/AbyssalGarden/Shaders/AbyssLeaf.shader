@@ -6,7 +6,13 @@ Shader "Abyssal Garden/Leaf" {
     _AbyssVolume ("Volume", 3D) = "" {}
     _AbyssGround ("Ground map", 2D) = "black" {}
     _AbyssShadow ("Sun shadow", 2D) = "white" {}
-    _AbyssInst ("Instances", 2D) = "black" {}
+    _AbyssGroups ("Plant groups", 2D) = "black" {}
+    _AbyssLeafGroup ("Leaf groups", 2D) = "black" {}
+    _AbyssDots ("Ground-cover spots", 2D) = "black" {}
+    _Mode ("Mode (0 groups, 1 ground cover)", Float) = 0
+    _Stride ("Leaf stride", Float) = 1
+    _WidthScale ("Width scale", Float) = 1
+    _Thin ("Thinning (1, 2, 4)", Float) = 1
     _MinD ("Band start (m)", Float) = 0
     _MaxD ("Band end (m)", Float) = 24
     _Far ("Fade-out distance (m)", Float) = 150

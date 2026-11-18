@@ -26,13 +26,13 @@ namespace AbyssalGarden.EditorTools
         static string Raw => Path.Combine(Application.dataPath, "AbyssalGarden", "Raw~");
 
         // ------------------------------------------------------------ manifest (see export.mjs)
-        [Serializable] class Manifest { public string level; public WorldInfo world; public TexInfo[] textures; public TerrainInfo terrain; public TemplateInfo[] templates; public SetInfo[] sets; public Viewpoint[] viewpoints; public string surfaceMesh, sphereMesh; public int waterSize; }
+        [Serializable] class Manifest { public string level; public WorldInfo world; public TexInfo[] textures; public TemplateInfo[] templates; public SetInfo[] sets; public Viewpoint[] viewpoints; public string surfaceMesh, sphereMesh, floorMesh; public int waterSize; }
         [Serializable] class WorldInfo { public float OX, OY, OZ, VS, cellSize; public int NX, NY, NZ, cells; }
         [Serializable] class TexInfo { public string name, file, format; public int width, height, depth, texelsPerInstance, instances; }
-        [Serializable] class TerrainInfo { public string file; public TerrainCell[] cells; }
-        [Serializable] class TerrainCell { public int cell, vertices, triangles; public float cx, cz, ymin, ymax; }
         [Serializable] class TemplateInfo { public string name, file; public int vertices, indices; }
-        [Serializable] class SetInfo { public string name, shader, texture, template; public int K, rows, mesh; public bool celled, scaleWithDetail; public float minD, maxD, far; public Draw[] draws; }
+        [Serializable] class SetInfo { public string name, shader, texture, template; public int K, rows, mesh; public bool celled; public float minD, maxD, far; public TexParam[] textures; public FloatParam[] floats; public Draw[] draws; }
+        [Serializable] class TexParam { public string name, value; }
+        [Serializable] class FloatParam { public string name; public float value; }
         [Serializable] class Draw { public int cell, @base, count; public float cx, cz; }
         [Serializable] class Viewpoint { public float[] position, lookAt; }
 
@@ -80,8 +80,8 @@ namespace AbyssalGarden.EditorTools
                 }
                 else
                 {
-                    var fmt = t.format == "RGBA32" ? TextureFormat.RGBA32 : t.format == "R16" ? TextureFormat.R16 : TextureFormat.RGBAFloat;
-                    bool mips = t.name == "detail";
+                    var fmt = t.format == "RGBA32" ? TextureFormat.RGBA32 : t.format == "R16" ? TextureFormat.R16 : t.format == "RGBAHalf" ? TextureFormat.RGBAHalf : TextureFormat.RGBAFloat;
+                    bool mips = false;
                     var t2 = new Texture2D(t.width, t.height, fmt, mips, true) { name = "Abyss " + t.name };
                     t2.SetPixelData(bytes, 0); // mip 0; Apply makes the rest
                     t2.Apply(mips);
@@ -101,6 +101,13 @@ namespace AbyssalGarden.EditorTools
                 useMipMap = true, autoGenerateMips = true, wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Trilinear, anisoLevel = 4, doubleBuffered = false,
             };
             var water = SaveAsset(crt, Gen + "/Water.asset");
+            // the rock detail texture: made once on load by AbyssDetail.shader (nothing stored)
+            var detailMat = SaveAsset(new Material(FindShader("Abyssal Garden/Detail (Custom Render Texture)")), Gen + "/Materials/Detail CRT.mat");
+            tex["detail"] = SaveAsset(new CustomRenderTexture(1024, 1024, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+            {
+                name = "Abyss Detail", material = detailMat, updateMode = CustomRenderTextureUpdateMode.OnLoad, initializationMode = CustomRenderTextureUpdateMode.OnLoad,
+                useMipMap = true, autoGenerateMips = true, wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Trilinear, anisoLevel = 8, doubleBuffered = false,
+            }, Gen + "/Detail.asset");
 
             Material Mat(string shader, string name, string inst = null)
             {
@@ -113,7 +120,7 @@ namespace AbyssalGarden.EditorTools
 
             // ---------------------------------------------------------------- meshes
             Progress("Meshes", 0.3f);
-            Fresh(Gen + "/Meshes"); Fresh(Gen + "/Terrain");
+            Fresh(Gen + "/Meshes");
             var templates = man.templates.ToDictionary(t => t.name);
             var meshes = new Dictionary<string, Mesh>();
             // cell sets get a mesh with the bounds of one cell (the renderer sits at the cell's centre), whole-world sets
@@ -137,24 +144,11 @@ namespace AbyssalGarden.EditorTools
             var bases = new List<float>();
             var counts = new List<float>();
 
-            // terrain: one mesh + collider per cell, in Unity space already
-            var terrainMat = SaveAsset(Mat("Abyssal Garden/Terrain", "Terrain"), Gen + "/Materials/Terrain.mat");
-            var terrainGo = Child(root, "Terrain");
-            using (var br = new BinaryReader(File.OpenRead(Path.Combine(Raw, man.terrain.file))))
-            {
-                foreach (var c in man.terrain.cells)
-                {
-                    int nv = br.ReadInt32(), ni = br.ReadInt32();
-                    var pos = ReadVec3(br, nv); var nrm = ReadVec3(br, nv); var idx = ReadInts(br, ni);
-                    var m = new Mesh { name = "Terrain " + c.cell, indexFormat = nv > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
-                    m.SetVertices(pos); m.SetNormals(nrm); m.SetIndices(idx, MeshTopology.Triangles, 0, true);
-                    SaveAsset(m, Gen + "/Terrain/Cell " + c.cell + ".asset");
-                    var go = Child(terrainGo, "Cell " + c.cell);
-                    go.AddComponent<MeshFilter>().sharedMesh = m;
-                    Quiet(go.AddComponent<MeshRenderer>(), terrainMat);
-                    go.AddComponent<MeshCollider>().sharedMesh = m;
-                }
-            }
+            // terrain: raymarched (a sphere wrapped around the camera), and a floor heightfield to keep the player above
+            // the sea floor (rocks are passable)
+            var sphere = Template(man.sphereMesh, false);
+            Single(root, "Terrain (raymarched)", sphere, SaveAsset(Mat("Abyssal Garden/Raymarch Terrain", "Raymarch Terrain"), Gen + "/Materials/Raymarch Terrain.mat"));
+            Child(root, "Floor Collider").AddComponent<MeshCollider>().sharedMesh = Template(man.floorMesh, false);
 
             // instanced sets
             var setsGo = Child(root, "Instanced");
@@ -168,8 +162,10 @@ namespace AbyssalGarden.EditorTools
                     "bubble" => "Abyssal Garden/Sprites", "snow" => "Abyssal Garden/Sprites", "fish" => "Abyssal Garden/Fish", "manta" => "Abyssal Garden/Manta",
                     _ => throw new Exception("unknown shader kind " + s.shader),
                 };
-                var mat = Mat(shader, s.name, s.texture);
+                var mat = Mat(shader, s.name, string.IsNullOrEmpty(s.texture) ? null : s.texture);
                 if (mat.HasProperty("_MinD")) { mat.SetFloat("_MinD", s.minD); mat.SetFloat("_MaxD", s.maxD); }
+                if (s.textures != null) foreach (var p in s.textures) mat.SetTexture(p.name, tex[p.value]);
+                if (s.floats != null) foreach (var p in s.floats) mat.SetFloat(p.name, p.value);
                 if (s.shader == "leaf") mat.SetFloat("_Far", s.far);
                 if (s.shader == "bubble") { mat.SetFloat("_Mode", 0); mat.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha); }
                 if (s.shader == "snow") { mat.SetFloat("_Mode", 1); mat.SetFloat("_DstBlend", (float)BlendMode.One); }
@@ -202,9 +198,6 @@ namespace AbyssalGarden.EditorTools
             }
 
             // camera-following objects
-            var sphere = Template(man.sphereMesh, false);
-            Single(root, "Water Surface", Template(man.surfaceMesh, false), SaveAsset(Mat("Abyssal Garden/Surface", "Surface"), Gen + "/Materials/Surface.mat"));
-            Single(root, "Backdrop", sphere, SaveAsset(Mat("Abyssal Garden/Backdrop", "Backdrop"), Gen + "/Materials/Backdrop.mat"));
             Single(root, "Light Shafts", sphere, SaveAsset(Mat("Abyssal Garden/Light Shafts", "Light Shafts"), Gen + "/Materials/Light Shafts.mat"));
             Single(root, "Post (grade + tonemap)", sphere, SaveAsset(Mat("Abyssal Garden/Post", "Post"), Gen + "/Materials/Post.mat"));
 

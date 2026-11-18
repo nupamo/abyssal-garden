@@ -1,10 +1,12 @@
 // Solid meshes: terrain, rocks, boulders, set pieces, sponges, coral. A port of W_SOLID (source/src/shaders.js).
 // ABYSS_TERRAIN: an ordinary mesh in Unity space (the terrain cells). Otherwise: a template mesh whose vertices
 // carry their instance slot in uv.y; the instance (3 texels: position + scale, rotation, material/seed/texture
-// scale/bob) comes from _AbyssInst.
+// scale/bob) comes from _AbyssInst. _Compact: 2 half-float texels instead (position relative to the cell centre + 30 m
+// up, scale; quaternion xyz, seed), with material and texture scale from the material (_Mat, _TexScale).
 #ifndef ABYSS_SOLID_INCLUDED
 #define ABYSS_SOLID_INCLUDED
 #include "AbyssCommon.cginc"
+float _Compact, _Mat, _TexScale;
 
 struct appdata {
   float4 vertex : POSITION; float3 normal : NORMAL; float4 uv : TEXCOORD0; // uv: aux, slot
@@ -27,7 +29,13 @@ bool SolidVertex(appdata v, out float3 w, out float3 n, out float3 op, out float
   w = 0.; n = 0.; op = 0.; on = 0.; m = 0.; q = float4(0., 0., 0., 1.);
   if (v.uv.y >= _Count) return false;
   float idx = _Base + v.uv.y;
-  float4 a = Inst(idx, 3, 0), b = Inst(idx, 3, 1), c = Inst(idx, 3, 2);
+  float4 a, b, c;
+  if (_Compact > .5) {
+    float4 h0 = Inst(idx, 2, 0), h1 = Inst(idx, 2, 1); float2 cc = CellCentre();
+    a = float4(h0.x + cc.x, h0.y - 30., h0.z + cc.y, h0.w);
+    b = float4(h1.xyz, sqrt(saturate(1. - dot(h1.xyz, h1.xyz))));
+    c = float4(_Mat, h1.w, _TexScale, 0.);
+  } else { a = Inst(idx, 3, 0); b = Inst(idx, 3, 1); c = Inst(idx, 3, 2); }
   if (!InBand(a.xyz)) return false;
   float sc = a.w;
   // small rocks shrink away towards the end of their draw distance (c.z: that distance)

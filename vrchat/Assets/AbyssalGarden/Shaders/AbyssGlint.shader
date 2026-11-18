@@ -1,10 +1,14 @@
 // Abyssal Garden: sparkling specks in the kelp and ground cover (additive). A port of vsGl / fsGl in W_LEAF.
-// Instance records (2 texels): (x, y, z, height up the kelp), (seed, hue, size, -).
+// Grown from the placement records (AbyssGrow.cginc): _Mode 0 = kelp columns (slot -> glint _Base + slot),
+// 1 = ground-cover spots (slot -> spot _Base + slot; 30% of the carpet tufts have one).
 Shader "Abyssal Garden/Glint" {
   Properties {
     _AbyssShadow ("Sun shadow", 2D) = "white" {}
     _AbyssGround ("Ground map", 2D) = "black" {}
-    _AbyssInst ("Instances", 2D) = "black" {}
+    _AbyssGroups ("Plant groups", 2D) = "black" {}
+    _AbyssGlintGroup ("Glint groups", 2D) = "black" {}
+    _AbyssDots ("Ground-cover spots", 2D) = "black" {}
+    _Mode ("Mode (0 kelp, 1 ground cover)", Float) = 0
     _MinD ("Band start (m)", Float) = 0
     _MaxD ("Band end (m)", Float) = 120
     _AbyssDetailScale ("Draw distance scale", Float) = 1
@@ -19,7 +23,8 @@ Shader "Abyssal Garden/Glint" {
       #pragma target 4.5
       #pragma vertex vert
       #pragma fragment frag
-      #include "AbyssCommon.cginc"
+      #include "AbyssGrow.cginc"
+      float _Mode;
       float2 sway(float2 p, float h, float t) {
         float ph = dot(p, float2(.031, .017));
         float a = .024 * pow(max(h, 0.), 1.25);
@@ -39,8 +44,10 @@ Shader "Abyssal Garden/Glint" {
         UNITY_INITIALIZE_OUTPUT(v2f, o);
         UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
         if (v.uv.y >= _Count) { o.pos = ABYSS_COLLAPSE; return o; }
-        float idx = _Base + v.uv.y;
-        float4 a = Inst(idx, 2, 0), b = Inst(idx, 2, 1);
+        int idx = (int)(_Base + v.uv.y);
+        float4 a, b;
+        if (_Mode < .5) { int gi = Index16(_AbyssGlintGroup, idx); GrowGroupGlint(gi, idx - (int)Group(gi, 3).w, a, b); }
+        else if (!GrowDotGlint(Dot(idx), idx, a, b)) { o.pos = ABYSS_COLLAPSE; return o; }
         float2 q = v.uv.zw; float t = Time(); float3 cam = CamPos();
         float3 p = a.xyz; float2 sw = sway(a.xz, a.w, t); p.x += sw.x; p.z += sw.y;
         p += .1 * float3(sin(t * .7 + b.x * 50.), sin(t * .9 + b.x * 70.), cos(t * .8 + b.x * 90.));
