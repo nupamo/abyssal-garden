@@ -3,3 +3,4 @@ dev.html
 # VRChat port: exporter output (regenerate with vrchat/exporter/export.mjs)
 vrchat/Assets/AbyssalGarden/Raw~/
 vrchat/exporter/.verify-shadow.html
+vrchat/exporter/.original-preview.html

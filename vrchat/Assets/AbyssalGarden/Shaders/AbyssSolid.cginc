@@ -68,8 +68,10 @@ TP tri(float3 p, float3 n, float s) {
 }
 float4 D(float2 uv) { return _AbyssDetail.Sample(sampler_AbyssDetail, uv); }
 
-float4 frag(v2f i, float facing : VFACE) : SV_Target {
-  UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
+// the surface to shade (abyss space): what the vertex shader passes on, or what the raymarcher found
+struct SolidIn { float3 wp; float3 n; float3 op; float3 on; float4 m; float4 q; float ao; };
+
+float4 ShadeSolid(SolidIn i, float facing) {
   int mat = (int)(i.m.x + .5); float sd = i.m.y; float fl_ = facing > 0. ? 1. : -1.;
   float3 cam = CamPos();
   float3 on = normalize(i.on) * fl_; float3 n0 = normalize(i.n) * fl_;
@@ -154,6 +156,12 @@ float4 frag(v2f i, float facing : VFACE) : SV_Target {
   float3 R = reflect(-V, N);
   c += (amb(i.wp, R, v1.g, z) + side(i.wp, R, sat((v2.r - .5) * 2.7), z)) * ao * (.08 + gloss) * .6 * pow(1. - sat(dot(N, V)), 2.5);
   return fin(fog(c, i.wp, z));
+}
+
+float4 frag(v2f v, float facing : VFACE) : SV_Target {
+  UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(v);
+  SolidIn i; i.wp = v.wp; i.n = v.n; i.op = v.op; i.on = v.on; i.m = v.m; i.q = v.q; i.ao = v.ao;
+  return ShadeSolid(i, facing);
 }
 
 // depth only (camera depth texture for the light shafts)

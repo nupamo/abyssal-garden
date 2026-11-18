@@ -4,6 +4,8 @@
 #define ABYSS_LOW 0
 #define ABYSS_SHADOW_SIZE 2048.0
 #define ABYSS_RAYN 24
+#define ABYSS_SDF_NEAR 1.50
+#define ABYSS_SDF_FAR 48.00
 static const float3 ABYSS_SUN = float3(0.25393846, 0.940512813, -0.225723075);
 // world (abyss space) -> shadow clip space, rows
 static const float4 ABYSS_SM0 = float4(0.00429079592, -0.0011585149, 0, 0);

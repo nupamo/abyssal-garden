@@ -69,9 +69,11 @@ namespace AbyssalGarden.EditorTools
             {
                 var bytes = File.ReadAllBytes(Path.Combine(Raw, t.file));
                 Texture made;
-                if (t.name == "volume")
+                if (t.depth > 1)
                 {
-                    var v = new Texture3D(t.width, t.height, t.depth, TextureFormat.RG16, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear, name = "Abyss Volume" };
+                    // volume (RG8), terrain SDF near (R8, linear) and far (R8, read with Load)
+                    var v = new Texture3D(t.width, t.height, t.depth, t.format == "RG16" ? TextureFormat.RG16 : TextureFormat.R8, false)
+                        { wrapMode = TextureWrapMode.Clamp, filterMode = t.name == "sdfFar" ? FilterMode.Point : FilterMode.Bilinear, name = "Abyss " + t.name };
                     v.SetPixelData(bytes, 0);
                     v.Apply(false);
                     made = v;
@@ -103,7 +105,7 @@ namespace AbyssalGarden.EditorTools
             Material Mat(string shader, string name, string inst = null)
             {
                 var m = new Material(FindShader(shader)) { name = name };
-                foreach (var p in new[] { ("_AbyssWater", (Texture)water), ("_AbyssDetail", tex["detail"]), ("_AbyssVolume", tex["volume"]), ("_AbyssGround", tex["ground"]), ("_AbyssShadow", tex["shadow"]) })
+                foreach (var p in new[] { ("_AbyssWater", (Texture)water), ("_AbyssDetail", tex["detail"]), ("_AbyssVolume", tex["volume"]), ("_AbyssGround", tex["ground"]), ("_AbyssShadow", tex["shadow"]), ("_AbyssSDF", tex["sdf"]), ("_AbyssSDFFar", tex["sdfFar"]) })
                     if (m.HasProperty(p.Item1)) m.SetTexture(p.Item1, p.Item2);
                 if (inst != null) m.SetTexture("_AbyssInst", tex[inst]);
                 return m;
